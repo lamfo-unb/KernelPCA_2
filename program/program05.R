@@ -48,7 +48,8 @@ for(i in arquivos){
   
     ### Top 200, 500 , 700 ativos
   for(j in c(200,250,500,700,800)){
-    vars_select  <- dados_faltantes$V2[1:(j+1)]
+    n_valid <- min(j+1,ncol(dados))
+    vars_select  <- dados_faltantes$V2[1:(n_valid)]
     
     dados_temp <- dados %>% select(vars_select) %>% 
         gather(key = "var", value = "value",-data_hora) %>% data.table()

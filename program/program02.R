@@ -1,3 +1,6 @@
+rm(list = ls())
+gc()
+
 library(data.table)
 library(dplyr)
 library(bit64)
@@ -16,36 +19,56 @@ library(corrplot)
 library(xtable)
 library(tidyverse)
 
-arquivos <- list.files("data","csv",full.names = T)
-i <- arquivos[2]
-  base_par <- tolower(gsub(".*data.(.).*csv","\\1",i))
+library(magrittr)
+library(RnavGraphImageData)
+library(dplyr)
+library(e1071)
+library(kernlab)
 
+arquivos <- list.files("data","csv",full.names = T)
+i <- arquivos[1]
+
+options(scipen=999)
+
+vec_parms <- NULL
+for(i in arquivos){
+  base_par <- tolower(gsub(".*data.(.).*csv","\\1",i))
+  
   dados <- data.table(read_csv2(i,
-                                 skip = 1))
+                                skip = 1))
   nomes_colunas <- names(read_csv2(i,n_max = 2))
   
   colnames(dados) <- nomes_colunas
   nomes_colunas_transform <- setdiff(nomes_colunas,"X1")
   
   setDT(dados)[, (nomes_colunas_transform):= lapply(.SD,  function(x) as.numeric(gsub(",",".",x))),
-                .SDcols=nomes_colunas_transform]
+               .SDcols=nomes_colunas_transform]
+  
+  
   
 
+  saveRDS(dados,paste0("data/",base_par,"_daily.rds"))
+  
+  N <- 1000
+  dados <- dados %>%  mutate(data_hora = as.Date(X1,"%d/%m/%Y")) %>% select(-X1) %>% data.table() 
+  dados <- dados[order(rev(data_hora))]
+  dados <- dados[1:N,]
   
   ## counting NA
   dados_faltantes <- t(dados[, lapply(.SD, function(x) sum(is.na(x)))])
   dados_faltantes <- cbind(data.table(dados_faltantes),
                            rownames(dados_faltantes)) %>% data.table()
-  dados_faltantes <- dados_faltantes[order(V1)]
-  saveRDS(dados,paste0("data/",base_par,"_daily.rds"))
-  j <- 200
+  dados_faltantes <- dados_faltantes[order(V1)] %>% filter(V1<(nrow(dados)-1))
+  j <- 700
+
   ### Top 200, 500 , 700 e 800 ativos
   for(j in c(200,250,500,700,800)){
-    vars_select  <- dados_faltantes$V2[1:(j+1)]
-    
-    
-    dados_temp <- dados %>% select(vars_select) %>% 
-      gather(key = "var", value = "value",-data_hora) %>% data.table()
+    n_valid <- min(j+1,length(dados_faltantes$V2))
+    vars_select  <- dados_faltantes$V2[1:(n_valid)]
+  
+
+    dados_temp <- dados %>% select(vars_select)  %>%
+      gather(key = "var", value = "value",-data_hora) %>% data.table() 
     
     
     ### Corrigindo base: ultimo valor negociado
@@ -68,64 +91,100 @@ i <- arquivos[2]
     dados_temp[,v:=sd(value,na.rm=T),by = "var"]
     dados_temp[,value_z:=(value-m)/v]
     
+    dados_temp <- dados_temp[order(value_z,data_hora)] %>%
+      select(-value,-m,-v) %>%
+      spread(key = var,value = value_z)
     
     
-  ## Respeitando regra 
-  select_vars <- names(b)[which(b<=165)]
-  set.seed(1635190218)
-  select_vars <- union("X1",sample(select_vars,200,replace = F))
-  base_temp <- data.table(base_temp %>% select(select_vars))
-  
-  base_temp[, NA_freq := Reduce(`+`, lapply(.SD,function(x) is.na(x)))]
-  base_temp <- base_temp %>% filter(NA_freq==0)
-  base_temp <- data.table(base_temp)
-  base_temp <- base_temp[,`:=`(year = gsub("\\d{2}.\\d{2}.(\\d{4})","\\1",X1),
-                     month = gsub("\\d{2}.(\\d{2}).\\d{4}","\\1",X1),
-                     day = gsub("(\\d{2}).\\d{2}.\\d{4}","\\1",X1))]
-  
-  base_temp <- base_temp[,last_day := max(day), by = .(year,month)]
-  # base_temp <- base_temp[(day == last_day),]
-  base_temp <- base_temp[,DT:=as.Date(paste0(day,"/",month,"/",year),format ="%d/%m/%Y")]
-  base_temp <- base_temp[order(DT)]
-  
-  
-  var_ativos <- select_vars[-1]
-  
-  # Calculando retorno dos ativos
-  base_temp <- base_temp[, c(var_ativos):=lapply(.SD, function(x) (x/shift(x, 1)-1)*100),.SDcols =var_ativos ]
-  
-  base_temp <- base_temp %>% select(c("DT",var_ativos))
-  
-  
-  ## ref: J. Bouchaud, M. Potters, Theory of Financial Risks—From Statistical Physics to Risk Management, Cambridge University Press, UK, 2000.
-  Q <- nrow(base_temp)/(ncol(base_temp) - 1)
-  lamda_max <- (1 + 1/Q + (1/Q)^.5)
-  
-  
-  base_temp <- data.table(gather(base_temp,"var","value",-DT)%>%filter(!is.na(value)))
-  base_temp[,m:=mean(value,na.rm=T),by = "var"]
-  base_temp[,v:=sd(value,na.rm=T),by = "var"]
-  base_temp[,value:=(value-m)/v]
-  
-  base_temp <- spread(base_temp %>% select(-m,-v),"var","value")
-  
-  
-  cor0 <- cor(base_temp[,-1])
-  eigen0 <- eigen(cor0)
-  
-  pdf(file.path("eigen.pdf"),height=8,width = 12)
-  
-  
-  plot(eigen0$values,type="l",xlim = c(0,25),col=1,lwd = 2,xlab = "Eigenvalue Index",ylab="Eigenvalue")
-  abline(h=lamda_max,col=2,lty=3)
-  
-  g1 <- eigen0$values[eigen0$values>=lamda_max]
-  g2 <- eigen0$values[eigen0$values<lamda_max]
-  eigen1<- diag(c(g1,rep(mean(g2),length(g2))))
-  cor1 <- eigen0$vectors %*% eigen1 %*% t(eigen0$vectors)
-  points(c(g1,rep(mean(g2),length(g2))),col=4,type="l",lwd = 2)
-  
-  
-  
-  dev.off()
-  
+    ## Pearson ----
+    mpearson <- var(dados_temp %>% select(-data_hora))
+    eigen0 <- eigen(mpearson)
+    
+    ## ref: J. Bouchaud, M. Potters, Theory of Financial Risks—From Statistical Physics to Risk Management, Cambridge University Press, UK, 2000.
+    Q <- nrow(dados_temp)/(ncol(dados_temp) - 1)
+    lamda_max <- (1 + 1/Q + (1/Q)^.5)
+    
+    g1 <- eigen0$values[eigen0$values>=lamda_max]
+    g2 <- eigen0$values[eigen0$values<lamda_max]
+    eigen1<- diag(c(g1,rep(mean(g2),length(g2))))
+    cor1 <- eigen0$vectors %*% eigen1 %*% t(eigen0$vectors)
+    
+    
+    vec_parms_temp <- data.frame(data = base_par,
+                                 cov_method = "Pearson",
+                                 time_freq = "daily",
+                                 initial = min(dados_temp$data_hora),
+                                 end = max(dados_temp$data_hora),
+                                 N = nrow(dados_temp),
+                                 X = ncol(dados_temp) - 1,
+                                 Q = Q, lamda_max = lamda_max,
+                                 eigen_up = paste0(length(g1)," (",round(length(g1)/(ncol(dados_temp) - 1)*100,2),"%)"),
+                                 eigen_v_up = paste0(round(sum(g1)/(sum(g1)+sum(g2))*100,2),"%"),
+                                 eigen_max = g1[1]/lamda_max,
+                                 eigen_v_max = paste0(round(sum(g1[1])/(sum(g1)+sum(g2))*100,2),"%"),
+                                 top5tradable = paste0(gsub("(.*)\\s.*\\s.*","\\1",dados_faltantes$V2[(1:5)+1]),collapse = ","))
+    
+    vec_parms <- rbind(vec_parms,vec_parms_temp)
+    
+    ## RMT ----
+    thetas <- c(.25,.75)
+    rbf1 <- rbfdot(sigma = thetas[1])
+    rbf2 <- rbfdot(sigma = thetas[2])
+    
+    K11 <- kernelMatrix(rbf1,as.matrix(dados_temp %>% select(-data_hora)))
+    
+    eigen0 <- eigen(K11)
+    
+    ## ref: J. Bouchaud, M. Potters, Theory of Financial Risks—From Statistical Physics to Risk Management, Cambridge University Press, UK, 2000.
+    Q <- nrow(dados_temp)/(ncol(dados_temp) - 1)
+    lamda_max <- (1 + 1/Q + (1/Q)^.5)
+    
+    g1 <- eigen0$values[eigen0$values>=lamda_max]
+    g2 <- eigen0$values[eigen0$values<lamda_max]
+    eigen1<- diag(c(g1,rep(mean(g2),length(g2))))
+    cor1 <- eigen0$vectors %*% eigen1 %*% t(eigen0$vectors)
+    
+    
+    vec_parms_temp <- data.frame(data = base_par,
+                                 cov_method = "Kernel",
+                                 time_freq = "daily",
+                                 initial = min(dados_temp$data_hora),
+                                 end = max(dados_temp$data_hora),
+                                 N = nrow(dados_temp),
+                                 X = ncol(dados_temp) - 1,
+                                 Q = Q, lamda_max = lamda_max,
+                                 eigen_up = paste0(length(g1)," (",round(length(g1)/(ncol(dados_temp) - 1)*100,2),"%)"),
+                                 eigen_v_up = paste0(round(sum(g1)/(sum(g1)+sum(g2))*100,2),"%"),
+                                 eigen_max = g1[1]/lamda_max,
+                                 eigen_v_max = paste0(round(sum(g1[1])/(sum(g1)+sum(g2))*100,2),"%"),
+                                 top5tradable = paste0(gsub("(.*)\\s.*\\s.*","\\1",dados_faltantes$V2[(1:5)+1]),collapse = ","))
+    
+    vec_parms <- rbind(vec_parms,vec_parms_temp)
+    
+    
+    print(paste0("Fim ",j))
+  }
+  print(paste0("Fim ",i))
+}
+
+print(xtable(vec_parms %>% select(-initial,-end,-top5tradable),
+             digits = c(0,0,1,1,0,0,2,2,1,1,2,2),caption = "sasa"),include.rownames = F)
+saveRDS(vec_parms,"program/results/DAILY_analysis.rds")
+
+
+
+## Conferindo quantidade de ativos 
+d_n <- readRDS("data/n_daily.rds")
+d_s <- readRDS("data/s_daily.rds")
+h_n <- readRDS("data/intraday/n_INTRADAY.rds")
+h_s <- readRDS("data/intraday/s_INTRADAY.rds")
+
+length(names(d_n))
+length(unique(h_n$var))
+c_n <- intersect(names(d_n),unique(h_n$var))
+length(c_n)
+
+length(names(d_s))
+length(unique(h_s$var))
+c_s <- intersect(names(d_s),unique(h_s$var))
+length(c_s)

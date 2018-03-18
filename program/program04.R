@@ -20,7 +20,7 @@ library(xtable)
 library(tidyverse)
 options(scipen=999)
 
-j <- "s"
+j <- "n"
 i <- 26
 for(j in c("s","n")){
   data_full <- NULL
@@ -40,3 +40,5 @@ for(j in c("s","n")){
   print(paste0("Fim ",j))
   saveRDS(data_full,paste0("data/intraday/",j,"_INTRADAY.rds"))
 }
+
+length(unique(data_full$var))
